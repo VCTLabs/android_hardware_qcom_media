@@ -91,6 +91,7 @@ extern "C" {
 #endif
 #include "OMX_Core.h"
 #include "OMX_QCOMExtns.h"
+#include "OMX_IndexExt.h"
 #include "qc_omx_component.h"
 #include <linux/msm_vidc_dec.h>
 #include <media/msm_vidc.h>
@@ -178,7 +179,7 @@ class VideoHeap : public MemoryHeapBase
 #define DESC_BUFFER_SIZE (8192 * 16)
 
 #ifdef _ANDROID_
-#define MAX_NUM_INPUT_OUTPUT_BUFFERS 32
+#define MAX_NUM_INPUT_OUTPUT_BUFFERS 64
 #endif
 
 #define OMX_FRAMEINFO_EXTRADATA 0x00010000
@@ -765,6 +766,7 @@ class omx_vdec: public qc_omx_component
         //*************************************************************
         pthread_mutex_t       m_lock;
         pthread_mutex_t       c_lock;
+        pthread_mutex_t       buf_lock;
         //sem to handle the minimum procesing of commands
         sem_t                 m_cmd_lock;
         sem_t                 m_safe_flush;
@@ -867,8 +869,8 @@ class omx_vdec: public qc_omx_component
         OMX_U32 m_demux_entries;
         OMX_U32 m_disp_hor_size;
         OMX_U32 m_disp_vert_size;
-
         OMX_S64 prev_ts;
+        OMX_S64 prev_ts_actual;
         bool rst_prev_ts;
         OMX_U32 frm_int;
 

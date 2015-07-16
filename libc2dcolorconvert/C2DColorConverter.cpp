@@ -318,7 +318,7 @@ C2D_STATUS C2DColorConverter::updateYUVSurfaceDef(int fd, void *base, void *data
     if (isSource) {
         C2D_YUV_SURFACE_DEF * srcSurfaceDef = (C2D_YUV_SURFACE_DEF *)mSrcSurfaceDef;
         srcSurfaceDef->plane0 = data;
-        srcSurfaceDef->phys0  = getMappedGPUAddr(fd, data, mSrcSize) + ((uint8_t *)data - (uint8_t *)base);
+        srcSurfaceDef->phys0  = (char*)getMappedGPUAddr(fd, data, mSrcSize) + ((uint8_t *)data - (uint8_t *)base);
         srcSurfaceDef->plane1 = (uint8_t *)data + mSrcYSize;
         srcSurfaceDef->phys1  = (uint8_t *)srcSurfaceDef->phys0 + mSrcYSize;
         srcSurfaceDef->plane2 = (uint8_t *)srcSurfaceDef->plane1 + mSrcYSize/4;
@@ -330,7 +330,7 @@ C2D_STATUS C2DColorConverter::updateYUVSurfaceDef(int fd, void *base, void *data
     } else {
         C2D_YUV_SURFACE_DEF * dstSurfaceDef = (C2D_YUV_SURFACE_DEF *)mDstSurfaceDef;
         dstSurfaceDef->plane0 = data;
-        dstSurfaceDef->phys0  = getMappedGPUAddr(fd, data, mDstSize) + ((uint8_t *)data - (uint8_t *)base);
+        dstSurfaceDef->phys0  = (char*)getMappedGPUAddr(fd, data, mDstSize) + ((uint8_t *)data - (uint8_t *)base);
         dstSurfaceDef->plane1 = (uint8_t *)data + mDstYSize;
         dstSurfaceDef->phys1  = (uint8_t *)dstSurfaceDef->phys0 + mDstYSize;
         dstSurfaceDef->plane2 = (uint8_t *)dstSurfaceDef->plane1 + mDstYSize/4;
@@ -404,7 +404,7 @@ size_t C2DColorConverter::calcStride(ColorConvertFormat format, size_t width)
         case NV12_128m:
             return ALIGN(width, ALIGN128);
         case YCbCr420P:
-            return width;
+            return ALIGN(width, ALIGN16);
         case YCrCb420P:
             return ALIGN(width, ALIGN16);
         default:
@@ -418,7 +418,7 @@ size_t C2DColorConverter::calcYSize(ColorConvertFormat format, size_t width, siz
         case YCbCr420SP:
             return (ALIGN(width, ALIGN16) * height);
         case YCbCr420P:
-            return width * height;
+            return ALIGN(width, ALIGN16) * height;
         case YCrCb420P:
             return ALIGN(width, ALIGN16) * height;
         case YCbCr420Tile:
@@ -458,7 +458,8 @@ size_t C2DColorConverter::calcSize(ColorConvertFormat format, size_t width, size
             size = ALIGN((alignedw * height) + (ALIGN(width/2, ALIGN32) * (height/2) * 2), ALIGN4K);
             break;
         case YCbCr420P:
-            size = ALIGN((width * height * 3 / 2), ALIGN4K);
+            alignedw = ALIGN(width, ALIGN16);
+            size = ALIGN((alignedw * height) + (ALIGN(width/2, ALIGN16) * (height/2) * 2), ALIGN4K);
             break;
         case YCrCb420P:
             alignedw = ALIGN(width, ALIGN16);
@@ -558,7 +559,7 @@ size_t C2DColorConverter::calcLumaAlign(ColorConvertFormat format) {
         case NV12_128m:
           return 1;
         default:
-          ALOGE("unknown format passed for luma alignment number");
+          ALOGV("unknown format passed for luma alignment number");
           return 1;
     }
 }

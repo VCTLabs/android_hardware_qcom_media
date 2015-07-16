@@ -1,5 +1,5 @@
 /*--------------------------------------------------------------------------
-Copyright (c) 2010-2014, The Linux Foundation. All rights reserved.
+Copyright (c) 2010-2015, The Linux Foundation. All rights reserved.
 
 Redistribution and use in source and binary forms, with or without
 modification, are permitted provided that the following conditions are met:
@@ -213,6 +213,8 @@ venc_dev::venc_dev(class omx_venc *venc_class)
     memset(&hier_p_layers,0,sizeof(hier_p_layers));
     memset(&ltrinfo, 0, sizeof(ltrinfo));
     memset(&m_debug,0,sizeof(m_debug));
+    sess_priority.priority = 1;
+    operating_rate = 0;
 
     char property_value[PROPERTY_VALUE_MAX] = {0};
     property_get("vidc.enc.log.in", property_value, "0");
@@ -287,8 +289,8 @@ void* venc_dev::async_venc_message_thread (void *input)
             DEBUG_PRINT_HIGH("Poll timedout, pipeline stalled due to client/firmware ETB: %d, EBD: %d, FTB: %d, FBD: %d",
                     omx->handle->etb, omx->handle->ebd, omx->handle->ftb, omx->handle->fbd);
             continue;
-        } else if (rc < 0) {
-            DEBUG_PRINT_ERROR("Error while polling: %d", rc);
+        } else if (rc < 0 && errno != EINTR && errno != EAGAIN) {
+            DEBUG_PRINT_ERROR("Error while polling: %d, errno = %d", rc, errno);
             break;
         }
 
@@ -349,7 +351,11 @@ void* venc_dev::async_venc_message_thread (void *input)
             while (!ioctl(pfd.fd, VIDIOC_DQBUF, &v4l2_buf)) {
                 venc_msg.msgcode=VEN_MSG_INPUT_BUFFER_DONE;
                 venc_msg.statuscode=VEN_S_SUCCESS;
-                omxhdr=omx_venc_base->m_inp_mem_ptr+v4l2_buf.index;
+                if (omx_venc_base->mUseProxyColorFormat && !omx_venc_base->mUsesColorConversion)
+                    omxhdr = &omx_venc_base->meta_buffer_hdr[v4l2_buf.index];
+                else
+                    omxhdr = &omx_venc_base->m_inp_mem_ptr[v4l2_buf.index];
+
                 venc_msg.buf.clientdata=(void*)omxhdr;
                 omx->handle->ebd++;
 
@@ -765,13 +771,13 @@ bool venc_dev::venc_open(OMX_U32 codec)
     int r;
     unsigned int alignment = 0,buffer_size = 0, temp =0;
     struct v4l2_control control;
-    OMX_STRING device_name = (OMX_STRING)"/dev/video/venus_enc";
+    OMX_STRING device_name = (OMX_STRING)"/dev/video33";
 
     char platform_name[PROPERTY_VALUE_MAX];
     property_get("ro.board.platform", platform_name, "0");
 
     if (!strncmp(platform_name, "msm8610", 7)) {
-        device_name = (OMX_STRING)"/dev/video/q6_enc";
+        device_name = (OMX_STRING)"/dev/video35";
     }
 
     m_nDriver_fd = open (device_name, O_RDWR);
@@ -785,8 +791,9 @@ bool venc_dev::venc_open(OMX_U32 codec)
         DEBUG_PRINT_ERROR("ERROR: Omx_venc::Comp Init Returning failure");
         return false;
     }
+    DEBUG_PRINT_HIGH(" Open device %s returned fd %d",
+            device_name, m_nDriver_fd);
 
-    DEBUG_PRINT_LOW("m_nDriver_fd = %lu", m_nDriver_fd);
     // set the basic configuration of the video encoder driver
     m_sVenc_cfg.input_width = OMX_CORE_QCIF_WIDTH;
     m_sVenc_cfg.input_height= OMX_CORE_QCIF_HEIGHT;
@@ -958,6 +965,12 @@ bool venc_dev::venc_open(OMX_U32 codec)
         control.value = 0x7fffffff;
         if (ioctl(m_nDriver_fd, VIDIOC_S_CTRL, &control))
             DEBUG_PRINT_ERROR("Failed to set V4L2_CID_MPEG_VIDC_VIDEO_NUM_P_FRAMES");
+    }
+
+    sess_priority.priority = 1; /* default to non-real-time */
+    if (!venc_set_session_priority(sess_priority.priority)) {
+        DEBUG_PRINT_ERROR("Setting session priority failed");
+        return OMX_ErrorUnsupportedSetting;
     }
 
     return true;
@@ -1207,6 +1220,7 @@ bool venc_dev::venc_set_param(void *paramData, OMX_INDEXTYPE index)
 
                         if (ioctl(m_nDriver_fd, VIDIOC_S_FMT, &fmt)) {
                             DEBUG_PRINT_ERROR("VIDIOC_S_FMT OUTPUT_MPLANE Failed");
+                            hw_overload = errno == EBUSY;
                             return false;
                         }
 
@@ -1239,6 +1253,7 @@ bool venc_dev::venc_set_param(void *paramData, OMX_INDEXTYPE index)
 
                     if (ioctl(m_nDriver_fd, VIDIOC_S_FMT, &fmt)) {
                         DEBUG_PRINT_ERROR("VIDIOC_S_FMT CAPTURE_MPLANE Failed");
+                        hw_overload = errno == EBUSY;
                         return false;
                     }
 
@@ -1932,6 +1947,26 @@ bool venc_dev::venc_set_config(void *configData, OMX_INDEXTYPE index)
                 }
                 break;
             }
+        case OMX_IndexConfigPriority:
+            {
+                OMX_PARAM_U32TYPE *priority = (OMX_PARAM_U32TYPE *)configData;
+                DEBUG_PRINT_LOW("Set_config: priority %u",priority->nU32);
+                if (!venc_set_session_priority(priority->nU32)) {
+                    DEBUG_PRINT_ERROR("Failed to set priority");
+                    return false;
+                }
+                break;
+            }
+        case OMX_IndexConfigOperatingRate:
+            {
+                OMX_PARAM_U32TYPE *rate = (OMX_PARAM_U32TYPE *)configData;
+                DEBUG_PRINT_LOW("Set_config: operating rate %d", rate->nU32);
+                if (!venc_set_operatingrate(rate->nU32)) {
+                    DEBUG_PRINT_ERROR("Failed to set operating rate");
+                    return false;
+                }
+                break;
+            }
         default:
             DEBUG_PRINT_ERROR("Unsupported config index = %u", index);
             break;
@@ -2144,6 +2179,10 @@ void venc_dev::venc_config_print()
     DEBUG_PRINT_HIGH("ENC_CONFIG: VUI timing info enabled: %d", vui_timing_info.enabled);
 
     DEBUG_PRINT_HIGH("ENC_CONFIG: Peak bitrate: %d", peak_bitrate.peakbitrate);
+
+    DEBUG_PRINT_HIGH("ENC_CONFIG: Session Priority: %u", sess_priority.priority);
+
+    DEBUG_PRINT_HIGH("ENC_CONFIG: Operating Rate: %u", operating_rate);
 }
 
 bool venc_dev::venc_reconfig_reqbufs()
@@ -3986,6 +4025,57 @@ bool venc_dev::venc_set_peak_bitrate(OMX_U32 nPeakBitrate)
 
     DEBUG_PRINT_LOW("Success IOCTL set control for id=%d, value=%d", control.id, control.value);
 
+    return true;
+}
+
+bool venc_dev::venc_set_session_priority(OMX_U32 priority) {
+    struct v4l2_control control;
+
+    control.id = V4L2_CID_MPEG_VIDC_VIDEO_PRIORITY;
+    switch(priority) {
+        case 0:
+            control.value = V4L2_MPEG_VIDC_VIDEO_PRIORITY_REALTIME_ENABLE;
+            break;
+        case 1:
+            control.value = V4L2_MPEG_VIDC_VIDEO_PRIORITY_REALTIME_DISABLE;
+            break;
+        default:
+            priority = 1;
+            control.value = V4L2_MPEG_VIDC_VIDEO_PRIORITY_REALTIME_DISABLE;
+            DEBUG_PRINT_ERROR("Unsupported priority level %u", priority);
+            break;
+    }
+
+    if (ioctl(m_nDriver_fd, VIDIOC_S_CTRL, &control)) {
+        DEBUG_PRINT_ERROR("Failed to set V4L2_MPEG_VIDC_VIDEO_PRIORITY_REALTIME_%s",
+                priority == 0 ? "ENABLE" : "DISABLE");
+        return false;
+    }
+
+    sess_priority.priority = priority;
+
+    DEBUG_PRINT_LOW("Success IOCTL set control for id=%x, val=%d",
+            control.id, control.value);
+    return true;
+}
+
+bool venc_dev::venc_set_operatingrate(OMX_U32 rate) {
+    struct v4l2_control control;
+
+    control.id = V4L2_CID_MPEG_VIDC_VIDEO_OPERATING_RATE;
+    control.value = rate;
+
+    DEBUG_PRINT_LOW("venc_set_operating_rate: %d fps", rate >> 16);
+    DEBUG_PRINT_LOW("Calling IOCTL set control for id=%d, val=%d", control.id, control.value);
+
+    if(ioctl(m_nDriver_fd, VIDIOC_S_CTRL, &control)) {
+        hw_overload = errno == EBUSY;
+        DEBUG_PRINT_ERROR("Failed to set operating rate %d fps (%s)",
+                rate >> 16, hw_overload ? "HW overload" : strerror(errno));
+        return false;
+    }
+    operating_rate = rate;
+    DEBUG_PRINT_LOW("Operating Rate Set = %d fps",  rate >> 16);
     return true;
 }
 
