@@ -7658,7 +7658,7 @@ void omx_vdec::handle_extradata(OMX_BUFFERHEADERTYPE *p_buf_hdr)
     OMX_OTHER_EXTRADATATYPE *data = (struct OMX_OTHER_EXTRADATATYPE *)p_extradata;
     if (data) {
         while ((consumed_len < drv_ctx.extradata_info.buffer_size)
-                && (data->eType != (OMX_EXTRADATATYPE)EXTRADATA_NONE)) {
+                && (data->eType != (OMX_EXTRADATATYPE)MSM_VIDC_EXTRADATA_NONE)) {
             if ((consumed_len + data->nSize) > drv_ctx.extradata_info.buffer_size) {
                 DEBUG_PRINT_LOW("Invalid extra data size");
                 break;
